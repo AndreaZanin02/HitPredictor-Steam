@@ -1,3 +1,18 @@
+"""
+Pipeline: Feature Encoding and Text Vectorization for Steam Dataset.
+          Pipeline to preprocess the clean dataset.
+
+This module transforms a cleaned dataset into ML-ready numerical features
+using:
+- MultiLabelBinarizer (categorical multi-label features)
+- TF-IDF (short text descriptions)
+- Sentence Transformers + PCA (long text embeddings)
+
+The pipeline is split into:
+1. Fit functions (train-only)
+2. Transform functions (train + inference)
+"""
+
 import pandas as pd
 import torch
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -5,13 +20,21 @@ from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
 
-""" Pipeline to preprocess the clean dataset """
-
+# -------------------------------------------------------------------------
+# TRAIN PHASE: FIT FEATURE ENCODERS
+# -------------------------------------------------------------------------
 
 # ----- Use on Train Set -----
 
 # Training MLB for categories, genres, tags, languages and extract top developers/publishers
 def fit_categorical_features(df_train, top_n=50):
+    """
+    Fit encoders for categorical multi-label features.
+    Trains:
+    - categories, genres, tags, languages (MultiLabelBinarizer)
+    - top publishers and developers (frequency-based encoding)
+    Returns fitted encoders for reuse in inference.
+    """
 
     mlb_cat = MultiLabelBinarizer()
     mlb_cat.fit(df_train['categories'].tolist() if 'categories' in df_train.columns else [])
@@ -35,6 +58,14 @@ def fit_categorical_features(df_train, top_n=50):
 
 #  Training TF-IDF and PCA on descriptions
 def fit_text_features(df_train):
+    """
+    Fit text vectorization models for short and long descriptions.
+    Components:
+    - TF-IDF on short_description (lexical features)
+    - SentenceTransformer embeddings on detailed_description
+    - PCA reduction on embeddings (dimensionality control)
+    Returns fitted models for inference reuse.
+    """
 
     df_train['short_description'] = df_train['short_description'].fillna("")
     df_train['detailed_description'] = df_train['detailed_description'].fillna("")
@@ -51,13 +82,22 @@ def fit_text_features(df_train):
     
     return {'tfidf': tfidf, 'pca': pca, 'st_model': model}
 
-# ------------------------------------------------
+# -------------------------------------------------------------------------
+# INFERENCE PHASE: TRANSFORM FEATURES
+# -------------------------------------------------------------------------
 
 
 # ----- Use on Train and Test/Inference sets -----
 
 # Apply the categorical transformer
 def transform_categorical_features(df, fitted_objects):
+    """
+    Apply fitted categorical encoders to dataset.
+    Expands:
+    - Multi-label features into binary columns
+    - Top publishers/developers into one-hot indicators
+    Drops original categorical columns after encoding.
+    """
     df_out = df.copy()
     
     if 'categories' in df_out.columns:
@@ -88,6 +128,13 @@ def transform_categorical_features(df, fitted_objects):
 
 # Apply TF-IDF e PCA on the text
 def transform_text_features(df, fitted_objects):
+    """
+    Apply TF-IDF + embedding-based transformations to text fields.
+    Generates:
+    - TF-IDF features from short_description
+    - PCA-reduced sentence embeddings from detailed_description
+    Drops original text columns after transformation.
+    """
 
     df_out = df.copy()
     df_out['short_description'] = df_out['short_description'].fillna("")

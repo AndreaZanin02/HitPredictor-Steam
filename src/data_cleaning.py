@@ -1,17 +1,90 @@
+"""
+Steam Dataset Cleaning and Feature Engineering Pipeline
+=======================================================
+
+Purpose
+-------
+This script is a pipeline to transform the raw datasets to a clean dataset useful for our model.
+
+It transforms two raw Steam datasets:
+
+1. steam_app_data.csv   (Steam Store metadata)
+2. steamspy_data.csv    (SteamSpy popularity statistics)
+
+into a single clean dataset suitable for machine learning.
+
+The primary prediction target is:
+
+    target_owners
+
+which represents the SteamSpy ownership tier for each game.
+
+Pipeline Overview
+-----------------
+1. Load and merge Steam Store and SteamSpy datasets.
+2. Keep only rows representing actual games.
+3. Create the target variable from SteamSpy ownership ranges.
+4. Extract useful features from JSON-like columns.
+5. Engineer hardware requirement features (RAM, CPU, GPU).
+6. Engineer financial and temporal features.
+7. Clean text fields.
+8. Remove redundant, noisy, and target-leaking columns.
+9. Export the final dataset.
+
+Design Principles
+-----------------
+- Preserve information useful for popularity prediction.
+- Remove features that directly leak the target.
+- Convert nested JSON/string structures into ML-friendly features.
+- Keep transformations deterministic and reproducible.
+- Avoid manual intervention during preprocessing.
+
+Expected Output
+---------------
+A CSV dataset where:
+- Numeric features are ready for modeling.
+- Categorical list features are normalized.
+- Text fields are cleaned.
+- Target variable is encoded as an integer class.
+"""
+
+# Imports
 import pandas as pd
 import ast
 import re
 import numpy as np
 from datetime import datetime
 
-# Pipeline to transform the raw datasets to a clean dataset useful for our model
-
+"""
+Utility Functions
+├─ parse_dict
+├─ extract_list_from_dicts
+├─ extract_keys_from_dict
+└─ parse_simple_list
+"""
 def parse_dict(val):
+    """
+    Safely convert a stringified dictionary into a Python dict.
+    Handles NaN, None, real dicts, or malformed strings.
+    Returns parsed dict or {} on failure.
+    Uses ast.literal_eval (safe alternative to eval).
+    Designed to be defensive: any parsing error is absorbed
+    to prevent pipeline failures in downstream steps.
+    """
     if pd.isna(val): return {}
     try: return ast.literal_eval(val)
     except: return {}
 
 def extract_list_from_dicts(val):
+    """
+    Convert Steam-style list-of-dicts into ML-ready token list.
+    Extracts 'description' from each dict, normalizes text by replacing
+    spaces with underscores, and ignores invalid entries.
+    Accepts stringified lists, real lists, or NaN values.
+    Returns cleaned list or [] if input is invalid/unparseable.
+    Fail-safe: any parsing error is absorbed to keep pipeline stable.
+    """
+  
     if pd.isna(val): return []
     try:
         parsed = ast.literal_eval(val)
@@ -21,6 +94,15 @@ def extract_list_from_dicts(val):
     except: return []
 
 def extract_keys_from_dict(val, top_n=5):
+    """
+    Extract top-N highest scoring keys from a dict-like structure.
+    Used mainly for SteamSpy tags where values represent relevance scores.
+    Parses input safely via parse_dict() and returns empty list on failure.
+    Output is sorted by value (descending) and normalized with underscores.
+    Returns up to top_n keys as ML-ready tokens.
+    Fail-safe: malformed or missing data never breaks the pipeline.
+    """
+
     parsed = parse_dict(val)
     if not parsed: return []
     # Top n tags
@@ -29,6 +111,16 @@ def extract_keys_from_dict(val, top_n=5):
 
 # Parsing string lists
 def parse_simple_list(val):
+    """
+    Parse list-like values into a normalized list of strings.
+    Supports stringified Python lists, comma-separated strings,
+    and missing values.
+    Normalizes items by trimming whitespace and replacing spaces
+    with underscores.
+    Falls back to comma splitting if literal_eval() fails.
+    Returns cleaned list or [] for empty, invalid, or malformed input.
+    """
+
     if pd.isna(val) or val == '[]': 
         return []
     try:
@@ -41,14 +133,41 @@ def parse_simple_list(val):
             return [item.strip().replace(' ', '_') for item in val.split(',') if item.strip()]
         return []
 
+"""
+Dataset Loading
+└─ load_and_merge
+"""
 def load_and_merge(steam_app_path, steam_spy_path):
+    """
+    Load Steam Store and SteamSpy datasets and merge them into a
+    single DataFrame.
+    Joins both sources using the common Steam application identifier
+    (steam_appid in Store, appid in SteamSpy).
+    Applies '_store' and '_spy' suffixes to overlapping column names.
+    Returns a unified dataset combining metadata, player statistics,
+    tags, reviews, and ownership information for ML processing.
+    """
     print("Loading and merging original datasets...")
     df_store = pd.read_csv(steam_app_path)
     df_spy = pd.read_csv(steam_spy_path)
     df = pd.merge(df_store, df_spy, left_on='steam_appid', right_on='appid', suffixes=('_store', '_spy'))
     return df
 
+"""
+Target Engineering
+└─ process_target_owners
+"""
 def process_target_owners(df):
+    """
+    Convert SteamSpy ownership ranges into ordinal target classes.
+    Example:
+        '0 .. 20,000' -> 0
+        '20,000 .. 50,000' -> 1
+        ...
+        '100,000,000 .. 200,000,000' -> 12
+    Transforms ownership prediction into a classification problem.
+    Rows with unknown ownership ranges are removed.
+    """
     print("Processing the target: 'owners'...")
     steamspy_tiers = {
         '0 .. 20,000': 0, '20,000 .. 50,000': 1, '50,000 .. 100,000': 2,
@@ -67,8 +186,21 @@ def process_target_owners(df):
     df = df.dropna(subset=['target_owners']).copy()
     return df
 
+"""
+Basic Game Feature Engineering
+└─ process_game_features
+"""
 # Filtering games and cleaning game features
 def process_game_features(df):
+    """
+    Filter non-game entries and engineer basic gameplay features.
+    Keeps only rows where type == 'game', excluding DLCs, software,
+    videos, and other store items.
+    Creates:
+    - is_controller_supported (binary flag)
+    - num_dlc (DLC count)
+    Converts raw metadata into simple ML-friendly features.
+    """
     print("Cleaning type, controller support, and dlc features...")
     
     # Filtering on game
@@ -103,8 +235,22 @@ def process_game_features(df):
         
     return df
 
+"""
+Restrictions Features
+└─ extract_restrictions_features
+"""
 # Extract DRM and external account requirements
 def extract_restrictions_features(df):
+    """
+    Convert DRM and external account requirements into binary features.
+    Creates:
+    - has_third_party_drm
+    - requires_ext_account
+    Uses the presence of restriction notices rather than their text,
+    reducing feature complexity while preserving relevant signals.
+    Original text columns are removed after feature extraction.
+    """
+
     print("Extracting DRM and external account features...")
     
     if 'drm_notice' in df.columns:
@@ -117,8 +263,24 @@ def extract_restrictions_features(df):
         
     return df
 
+"""
+JSON Feature Extraction
+├─ extract_achievements_total
+└─ extract_json_features
+"""
 # Extract the value of the key 'total' from achievements dict
 def extract_achievements_total(val):
+    """
+    Extract total number of achievements from Steam metadata.
+    Steam stores achievements as a stringified dictionary containing
+    a 'total' field.
+    Returns 0 when:
+    - value is NaN or missing
+    - parsing fails
+    - structure is not a dict
+    - 'total' field is absent
+    Ensures safe numeric output for ML pipelines.
+    """
     if pd.isna(val): 
         return 0
     try:
@@ -131,6 +293,17 @@ def extract_achievements_total(val):
 
 # Extract feature from JSON structures
 def extract_json_features(df):
+    """
+    Flatten JSON-like Steam metadata into ML-ready features.
+    Extracts:
+    - Platform support (Windows/Mac/Linux as binary flags)
+    - metacritic_score
+    - num_achievements
+    - categories, genres, tags (normalized token lists)
+    Converts nested structures into tabular features suitable for ML.
+    Ensures compatibility with standard machine learning pipelines.
+    """
+
     print("Extraction features from JSON structures...")
     
     if 'platforms' in df.columns:
@@ -153,8 +326,25 @@ def extract_json_features(df):
         df['num_achievements'] = df['achievements'].apply(extract_achievements_total)
     return df
 
+"""
+Text Processing
+└─ clean_text_descriptions
+"""
 # Cleaning HTML tags from descriptions
 def clean_text_descriptions(df):
+    """
+    Remove HTML tags and normalize whitespace in Steam descriptions.
+    Cleans:
+    - detailed_description
+    - short_description
+    Steps:
+    - Strip HTML markup
+    - Normalize repeated whitespace
+    - Trim leading/trailing spaces
+    Improves text quality for NLP tasks like TF-IDF, embeddings,
+    and classification by removing formatting noise.
+    """
+
     print("Cleaning HTML tags from text descriptions...")
     
     # Pulisce sia la descrizione dettagliata che quella breve
@@ -171,7 +361,22 @@ def clean_text_descriptions(df):
             
     return df
 
+"""
+Hardware Requirement Features
+├─ extract_ram_features
+└─ extract_gpu_cpu_features
+"""
 def extract_ram_features(df):
+    """
+    Extract and normalize RAM requirements from system specs.
+    Creates:
+    - min_ram_gb
+    - rec_ram_gb
+    Parses semi-structured requirement text and converts values
+    into standardized gigabytes.
+    Handles formats like MB/GB and HTML-laced strings.
+    Provides a proxy for game technical complexity.
+    """
     print("Extracting min and recommended ram features...")
 
     def get_req_string(val, req_type):
@@ -232,6 +437,16 @@ def extract_ram_features(df):
     return df
 
 def extract_gpu_cpu_features(df):
+    """
+    Extract hardware requirement signals from system specs text.
+    Creates binary indicators for:
+    - req_high_end_gpu
+    - req_dedicated_gpu
+    - req_high_cpu
+    - req_mid_cpu
+    Uses heuristic pattern matching to estimate hardware demands.
+    Not a precise benchmark, but a proxy for technical complexity.
+    """
     print("Extracting CPU/GPU features (vectorized)...")
     
     reqs = (df.get('pc_requirements', '') + df.get('mac_requirements', '') + df.get('linux_requirements', '')).fillna('').str.lower()
@@ -244,7 +459,23 @@ def extract_gpu_cpu_features(df):
     
     return df
 
+"""
+Financial and Temporal Features
+└─ extract_financial_and_temporal
+"""
 def extract_financial_and_temporal(df):
+    """
+    Extract financial, temporal, and engagement features.
+    Creates:
+    - price
+    - is_free
+    - days_since_release
+    - review_ratio
+    Removes invalid or future-dated releases.
+    Review ratio measures user sentiment from positive/negative reviews.
+    Captures pricing, age, and popularity signals for modeling.
+    """
+
     print("Extracting financial and time features...")
 
     if 'initialprice' in df.columns:
@@ -282,8 +513,22 @@ def extract_financial_and_temporal(df):
         df['review_ratio'] = np.where(total_reviews > 0, df['positive'] / total_reviews, 0)
     return df
 
+"""
+Language Features
+└─ extract_language_features
+"""
 # Extracting language features
 def extract_language_features(df):
+    """
+    Normalize Steam language data into ML features.
+    Creates:
+    - languages (cleaned token list)
+    - num_languages_supported
+    Converts comma-separated strings into structured features.
+    Missing values become empty lists.
+    Serves as a proxy for localization effort and market reach.
+    """
+
     print("Extracting language features...")
     if 'languages' in df.columns:
         
@@ -294,7 +539,22 @@ def extract_language_features(df):
         df['num_languages_supported'] = df['languages'].apply(len)
     return df
 
+"""
+Dataset Organization
+├─ reorder_and_rename_columns
+└─ clean_and_export
+"""
 def reorder_and_rename_columns(df):
+    """
+    Standardize column names and enforce ML-ready column ordering.
+    Groups features into logical categories (game metadata, content,
+    language, engagement, pricing, and engineered features).
+    Renames:
+    - name_store -> name
+    Ensures target_owners is placed last to avoid leakage.
+    Improves readability, debugging, and reproducibility of the dataset.
+    """
+
     print("Renaming and reordering columns...")
     
     df = df.rename(columns={'name_store': 'name'})
@@ -321,6 +581,17 @@ def reorder_and_rename_columns(df):
     return df[new_cols]
 
 def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
+    """
+    Final dataset cleanup before export.
+    Removes:
+    - Identifiers (no predictive value)
+    - Raw processed columns (already engineered)
+    - Duplicate merge artifacts
+    - Target leakage features (e.g., ccu, positive, negative)
+    - Irrelevant metadata
+    Exports final ML-ready dataset to CSV and prints shape.
+    Ensures clean separation between features and target signal.
+    """
     print("Final cleaning...")
 
     cols_to_drop = [
@@ -353,9 +624,26 @@ def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
     print(f"Dataset saved into '{output_filename}' with shape: {df.shape}")
     return df
 
-
-
-# Cleaning pipeline
+# =========================================================================
+# PIPELINE EXECUTION ORDER
+# =========================================================================
+#
+# Raw Steam Store Data \
+#          +            > --> Raw StreamSpy Data --> Merge Datasets 
+# Raw SteamSpy Data    /                                          |
+#                                                                 |
+#                                                                 v
+# Extract Language Features <-- Extract JSON Features <-- Keep Only Games
+#          |
+#          v
+# Extract RAM Features --> Extract CPU/GPU Features --> Extract Financial Features
+#                                                                 |
+#                                                                 v
+# Final Cleanup <-- Reorder Columns <-- Clean Text <-- Extract Restrictions
+#          |
+#          v
+# clean_dataset.csv
+# =========================================================================
 if __name__ == "__main__":
 
     FILE_STEAM_STORE = "../dataset/raw_data/steam_app_data.csv"

@@ -182,3 +182,7 @@ cython_debug/
 
 # Dataset
 *.csv
+
+# Developer garbage
+/src/andrea_stuff/
+/src/pedro_stuff/
