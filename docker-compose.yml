@@ -1,0 +1,41 @@
+services:
+  # --- The Database Service ---
+  mongodb:
+    image: mongo:latest
+    container_name: hit-db-container
+    hostname: hit-db-container
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - hit-net
+
+  # --- Python Environment ---
+  python-env:
+    image: python:latest
+    container_name: hit-dev
+    hostname: hit-dev
+    depends_on:
+      - mongodb
+    # LOAD SECRETS HERE:
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app/src
+    tty: true
+    stdin_open: true
+    networks:
+      - hit-net
+    command: >
+      bash -c "pip install --upgrade pip && 
+               pip install -r /app/requirements.txt && 
+               /bin/bash"
+
+networks:
+  hit-net:
+    driver: bridge
+
+volumes:
+  mongo-data:
