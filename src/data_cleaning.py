@@ -159,31 +159,53 @@ Target Engineering
 """
 def process_target_owners(df):
     """
-    Convert SteamSpy ownership ranges into ordinal target classes.
-    Example:
-        '0 .. 20,000' -> 0
-        '20,000 .. 50,000' -> 1
-        ...
-        '100,000,000 .. 200,000,000' -> 12
-    Transforms ownership prediction into a classification problem.
-    Rows with unknown ownership ranges are removed.
+    Convert SteamSpy ownership ranges into 5 ordinal target tiers.
+    Mapping logic derived from project architecture:
+    Tier 0: 0 .. 20k           (The Indie Long-Tail - Low adoption)
+    Tier 1: 20k .. 100k        (Healthy Niche - Sustainable indie)
+    Tier 2: 100k .. 500k       (Mid-Market Success - Breakout hits)
+    Tier 3: 500k .. 2M         (Major Success - AA level)
+    Tier 4: 2M+                (Hit / AAA status)
     """
-    print("Processing the target: 'owners'...")
+    print("Processing the target: 'owners' (Re-Binning in 5 Tiers)...")
+    
     steamspy_tiers = {
-        '0 .. 20,000': 0, '20,000 .. 50,000': 1, '50,000 .. 100,000': 2,
-        '100,000 .. 200,000': 3, '200,000 .. 500,000': 4, '500,000 .. 1,000,000': 5,
-        '1,000,000 .. 2,000,000': 6, '2,000,000 .. 5,000,000': 7,
-        '5,000,000 .. 10,000,000': 8, '10,000,000 .. 20,000,000': 9,
-        '20,000,000 .. 50,000,000': 10, '50,000,000 .. 100,000,000': 11,
-        '100,000,000 .. 200,000,000': 12
+        # Tier 0
+        '0 .. 20,000': 0, 
+        
+        # Tier 1
+        '20,000 .. 50,000': 1, 
+        '50,000 .. 100,000': 1,
+        
+        # Tier 2
+        '100,000 .. 200,000': 2, 
+        '200,000 .. 500,000': 2, 
+        
+        # Tier 3
+        '500,000 .. 1,000,000': 3, 
+        '1,000,000 .. 2,000,000': 3,
+        
+        # Tier 4
+        '2,000,000 .. 5,000,000': 4, 
+        '5,000,000 .. 10,000,000': 4,
+        '10,000,000 .. 20,000,000': 4, 
+        '20,000,000 .. 50,000,000': 4, 
+        '50,000,000 .. 100,000,000': 4, 
+        '100,000,000 .. 200,000,000': 4
     }
     
+    # Mappatura dei valori
     df['target_owners'] = df['owners'].map(steamspy_tiers)
+    
+    # Controllo per eventuali valori anomali
     unmapped = df['target_owners'].isna().sum()
     if unmapped > 0:
-        print(f"   -> WARNING: {unmapped} lines dropped (range 'owners' non valido)")
+        print(f"   -> WARNING: {unmapped} lines dropped (range 'owners' non valido o mancante)")
     
+    # Rimozione righe con target nullo e cast esplicito a intero
     df = df.dropna(subset=['target_owners']).copy()
+    df['target_owners'] = df['target_owners'].astype(int)
+    
     return df
 
 """
@@ -468,7 +490,6 @@ def extract_financial_and_temporal(df):
     Extract financial, temporal, and engagement features.
     Creates:
     - price
-    - is_free
     - days_since_release
     - review_ratio
     Removes invalid or future-dated releases.
@@ -486,8 +507,6 @@ def extract_financial_and_temporal(df):
             # If is_free == True the price and discount are 0.0
             df.loc[df['is_free'] == True, 'price'] = 0.0
             df.loc[df['is_free'] == True, 'discount'] = 0.0
-            # If the price is 0, the flag is_free is True
-            df.loc[df['price'] == 0.0, 'is_free'] = True
         else:
             df['is_free'] = (df['price'] == 0.0)
 
@@ -611,7 +630,7 @@ def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
         # Redundant features (due to datasets merge)
         'developer', 'publisher', 'supported_languages', 'metacritic',
         'price_overview', 'about_the_game', 'packages', 'package_groups', 'demos',
-        'content_descriptors', 'recommendations', 'genre',
+        'content_descriptors', 'recommendations', 'genre', 'is_free',
 
         # Features too correlated to our target (number of users) 
         'ccu', 'positive', 'negative',
