@@ -89,8 +89,8 @@ from data_cleaning_utils import (
 # ============================================================================================
 if __name__ == "__main__":
 
-    FILE_STEAM_STORE = "../dataset/raw_data/steam_app_data.csv"
-    FILE_STEAM_SPY = "../dataset/raw_data/steamspy_data.csv"
+    FILE_STEAM_STORE = "../dataset/raw_data/steam_app_data.zip"
+    FILE_STEAM_SPY = "../dataset/raw_data/steamspy_data.zip"
     
     df_merged = load_and_merge(FILE_STEAM_STORE, FILE_STEAM_SPY)
     df_filtered = process_game_features(df_merged)
