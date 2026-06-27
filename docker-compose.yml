@@ -1,23 +1,23 @@
 services:
   # --- The Database Service ---
-  mongodb:
-    image: mongo:latest
-    container_name: hit-db-container
-    hostname: hit-db-container
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-    networks:
-      - hit-net
+  #mongodb:
+  #  image: mongo:latest
+  #  container_name: hit-db-container
+  #  hostname: hit-db-container
+  #  ports:
+  #    - "27017:27017"
+  #  volumes:
+  #    - mongo-data:/data/db
+  #  networks:
+  #    - hit-net
 
   # --- Python Environment ---
   python-env:
     image: python:latest
     container_name: hit-dev
     hostname: hit-dev
-    depends_on:
-      - mongodb
+    #depends_on:
+    #  - mongodb
     # LOAD SECRETS HERE:
     env_file:
       - .env
