@@ -3,6 +3,7 @@ numpy
 scikit-learn
 sentence-transformers
 torch
+kaggle
 kagglehub
 tqdm
-joblib
+joblibxx

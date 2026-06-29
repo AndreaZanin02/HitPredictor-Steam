@@ -73,30 +73,25 @@ from data_cleaning_utils import (
 )
 
 
-# =========================================================================
+# =============================================================================================
 # PIPELINE EXECUTION ORDER
-# =========================================================================
-#
-# Raw Steam Store Data \
-#          +            > --> Raw StreamSpy Data --> Merge Datasets 
-# Raw SteamSpy Data    /                                          |
-#                                                                 |
-#                                                                 v
-# Extract Language Features <-- Extract JSON Features <-- Keep Only Games
+# =============================================================================================
+#  
+# (Raw Steam Store Data + Raw SteamSpy Data) -> Raw StreamSpy Data -> Merge Datasets -+
+#                                                                                     |
+#                                                                                     v
+# Extract RAM Features <- Extract Language Features <- Extract JSON Features <- Keep Only Games
 #          |
 #          v
-# Extract RAM Features --> Extract CPU/GPU Features --> Extract Financial Features
-#                                                                 |
-#                                                                 v
-# Final Cleanup <-- Reorder Columns <-- Clean Text <-- Extract Restrictions
-#          |
-#          v
-# clean_dataset.csv
-# =========================================================================
+# Extract CPU/GPU Features -> Extract Financial Features -> Extract Restrictions -----+
+#                                                                                     |
+#                                                                                     v
+#                     (clean_dataset.csv) <- Final Cleanup <- Reorder Columns <- Clean Text 
+# ============================================================================================
 if __name__ == "__main__":
 
-    FILE_STEAM_STORE = "../dataset/raw_data/steam_app_data.csv"
-    FILE_STEAM_SPY = "../dataset/raw_data/steamspy_data.csv"
+    FILE_STEAM_STORE = "../dataset/raw_data/steam_app_data.zip"
+    FILE_STEAM_SPY = "../dataset/raw_data/steamspy_data.zip"
     
     df_merged = load_and_merge(FILE_STEAM_STORE, FILE_STEAM_SPY)
     df_filtered = process_game_features(df_merged)
