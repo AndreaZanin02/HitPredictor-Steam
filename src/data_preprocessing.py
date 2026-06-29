@@ -34,6 +34,26 @@ class CorrelationRemover(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.drop(columns=self.to_drop_, errors='ignore')
 
+
+def dynamic_undersample(y):
+    """
+    Dynamically calculates how many samples to keep for Class 0
+    based on the current fold size
+    """
+    import pandas as pd
+    
+    # Counting occurences
+    counts = pd.Series(y).value_counts().to_dict()
+    
+    # Reducing class 0 to 25% of its current volume
+    target_class_0 = int(counts[0] * 0.25)
+    
+    # Ensuring that Class 0 never becomes smaller than Class 1
+    safe_target = max(target_class_0, counts.get(1, 0))
+    
+    return {0: safe_target}
+
+
 # Embedding pre-computation function
 def precompute_detailed_embeddings(df, text_col='detailed_description'):
     """
@@ -93,29 +113,37 @@ class SteamFeatureExtractor(BaseEstimator, TransformerMixin):
     def transform(self, X):
         df_out = X.copy()
         
+        # List for the new features
+        new_features = []
+        
         # Applying MultiLabelBinarizer
         for col, mlb, prefix in [('categories', self.mlb_cat_, 'cat'), ('genres', self.mlb_genres_, 'genre'), 
                                  ('tags', self.mlb_tags_, 'tag'), ('languages', self.mlb_langs_, 'lang')]:
             if col in df_out.columns:
                 encoded = pd.DataFrame(mlb.transform(df_out[col]), columns=[f"{prefix}_{c}" for c in mlb.classes_], index=df_out.index)
-                df_out = pd.concat([df_out, encoded], axis=1)
+                new_features.append(encoded)
                 
         # Analysis of creators
         if 'publishers' in df_out.columns:
             pub_cols = {f'pub_{str(p).replace(" ", "_")}': df_out['publishers'].apply(lambda x: 1 if p in x else 0) for p in self.top_publishers_}
-            df_out = pd.concat([df_out, pd.DataFrame(pub_cols, index=df_out.index)], axis=1)
+            new_features.append(pd.DataFrame(pub_cols, index=df_out.index))
             
         if 'developers' in df_out.columns:
             dev_cols = {f'dev_{str(d).replace(" ", "_")}': df_out['developers'].apply(lambda x: 1 if d in x else 0) for d in self.top_developers_}
-            df_out = pd.concat([df_out, pd.DataFrame(dev_cols, index=df_out.index)], axis=1)
+            new_features.append(pd.DataFrame(dev_cols, index=df_out.index))
             
         # Applying TF-IDF
         if 'short_description' in df_out.columns:
             tfidf_matrix = self.tfidf_.transform(df_out['short_description'].fillna(""))
             tfidf_cols = [f"tfidf_{w}" for w in self.tfidf_.get_feature_names_out()]
             df_tfidf = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df_out.index)
-            df_out = pd.concat([df_out, df_tfidf], axis=1)
+            new_features.append(df_tfidf)
 
+        # Concat of the new features
+        if new_features:
+            df_out = pd.concat([df_out] + new_features, axis=1)
+
+        # Handling NaN values
         if hasattr(self, 'ram_imputer_') and 'min_ram_gb' in df_out.columns:
             # NaN -> median calculated during the fit
             df_out['min_ram_gb'] = self.ram_imputer_.transform(df_out[['min_ram_gb']])
