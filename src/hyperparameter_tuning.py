@@ -3,21 +3,17 @@ import numpy as np
 import sklearn
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, cross_validate
 from sklearn.preprocessing import RobustScaler
+from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import SelectFromModel
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 import joblib
 from tqdm.auto import tqdm
+import ast
 import contextlib
-
-from data_preprocessing import (
-    fit_categorical_features, 
-    transform_categorical_features,
-    fit_text_features, 
-    transform_text_features
-)
-from sklearn.base import BaseEstimator, TransformerMixin
+from data_preprocessing import precompute_detailed_embeddings, SteamFeatureExtractor, CorrelationRemover
 
 @contextlib.contextmanager
 def tqdm_joblib(tqdm_object):
@@ -39,89 +35,68 @@ def tqdm_joblib(tqdm_object):
 
 sklearn.set_config(transform_output="pandas")
 
-# ------------------- Pre-processing classes ----------------------
-class SteamFeatureExtractor(BaseEstimator, TransformerMixin):
-    """
-    Encapsulates custom preprocessing to prevent data leakage
-    during cross-validation
-    """
-    def fit(self, X, y=None):
-        # The fit occurs only on the training portion of the current fold
-        self.cat_artifacts_ = fit_categorical_features(X, top_n=50)
-        self.text_artifacts_ = fit_text_features(X)
-        return self
-        
-    def transform(self, X):
-        X_enc = transform_categorical_features(X, self.cat_artifacts_)
-        X_enc = transform_text_features(X_enc, self.text_artifacts_)
-        # Removing textual residues
-        return X_enc.select_dtypes(include=['number', 'bool'])
-
-class CorrelationRemover(BaseEstimator, TransformerMixin):
-    """
-    Dynamically removes highly correlated features based on the training fold distribution
-    """
-    def __init__(self, threshold=0.97):
-        self.threshold = threshold
-        self.to_drop_ = []
-
-    def fit(self, X, y=None):
-        corr_matrix = X.corr().abs()
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-        self.to_drop_ = [column for column in upper.columns if any(upper[column] > self.threshold)]
-        return self
-
-    def transform(self, X):
-        return X.drop(columns=self.to_drop_, errors='ignore')
-
-# ----------------------- Loading and splitting the dataset -----------------------
+# Loading clean dataset
 DATASET_PATH = "../dataset/clean_data/clean_dataset.csv"
 df = pd.read_csv(DATASET_PATH)
 
 X = df.drop(columns=['target_owners', 'name'])
 y = df['target_owners'].astype(int)
 
-# Tuning prototype mode
-PROTOTYPE_FRAC = 0.15
-print(f"\nATTENTION: Prototype mode is active. Using {PROTOTYPE_FRAC*100}% of the dataset")
+# Reducing the dataset in order to speed up the tuning 
+PROTOTYPE_FRAC = 0.20
+X_proto, _, y_proto, _ = train_test_split(X, y, train_size=PROTOTYPE_FRAC, stratify=y, random_state=42)
 
-# Extracting the subset while keeping the stratification intact
-X_proto, _, y_proto, _ = train_test_split(
-    X, y, 
-    train_size=PROTOTYPE_FRAC, 
-    stratify=y, 
-    random_state=42
-)
+# From string to python lists
+list_columns = ['categories', 'genres', 'tags', 'publishers', 'developers', 'languages']
+for col in list_columns:
+    if col in df.columns:
+        X_proto[col] = X_proto[col].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
 
-print(f"Reduced dataset size: {len(X)} elements")
-print(f"Class distribution maintained:\n{y.value_counts(normalize=True)}")
+# Copy of the prototype dataset in order to analyze the embeddings
+df_proto = X_proto.copy()
+df_proto['target_owners'] = y_proto
 
-# ---------------------- Pipeline Setup ------------------------
-# Scaler defined only for continuous variables
-# The rest of the variables will pass through unchanged
-numeric_cols = ['price', 'days_since_release', 'min_ram_gb', 
-                'required_age', 'num_dlc', 'num_achievements', 
-                'num_languages_supported', 'metacritic_score', 'review_ratio',
-                'discount', 'average_forever', 'average_2weeks', 'median_forever',
-                'median_2weeks']
+# Using the function of data_preprocessing for the embeddings calculation on the prototype dataset
+df_proto_processed, emb_cols = precompute_detailed_embeddings(df_proto, text_col='detailed_description')
 
-scaler_step = ColumnTransformer(
-    transformers=[('num_scaler', RobustScaler(), numeric_cols)],
+# Saving final x_proto and y_proto
+X_proto = df_proto_processed.drop(columns=['target_owners'])
+y_proto = df_proto_processed['target_owners']
+
+print(f"Reduced dataset size: {len(X_proto)} elements")
+print(f"Class distribution maintained:\n{y_proto.value_counts(normalize=True)}")
+
+# Definition of the numeric columns
+numeric_cols = ['price', 'days_since_release', 'min_ram_gb', 'rec_ram_gb', 'required_age', 'num_dlc', 
+                'num_achievements', 'num_languages_supported', 'metacritic_score', 
+                'review_ratio', 'discount', 'average_forever', 'average_2weeks', 
+                'median_forever', 'median_2weeks']
+
+numeric_transformer = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')), 
+    ('scaler', RobustScaler())
+])
+
+# The ColumnTransformer handles PCA in isolation on the pre-calculated columns.
+# fit_transform will occur dynamically within each individual fold of the CV
+scaler_and_pca = ColumnTransformer(
+    transformers=[
+        ('num_pipeline', numeric_transformer, numeric_cols),
+        ('pca_pipeline', PCA(n_components=50), emb_cols)
+    ],
     remainder='passthrough',
     verbose_feature_names_out=False
 )
 
-feature_selector = SelectFromModel(
-    RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
-)
-
+# Final pipeline
 pipe = Pipeline([
     ('steam_extractor', SteamFeatureExtractor()),
-    ('scaler', scaler_step),
+    ('scaler_and_pca', scaler_and_pca),
     ('corr_remover', CorrelationRemover(threshold=0.95)), 
-    ('feature_selection', feature_selector),
-    ('classifier', RandomForestClassifier(class_weight='balanced', random_state=42))
+    ('feature_selection', SelectFromModel(RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=8))),
+    ('classifier', RandomForestClassifier(class_weight='balanced', random_state=42, n_jobs=8))
 ])
+
 
 # ----------------- Hyperparameter Tuning ---------------------
 param_grid = {
@@ -147,13 +122,14 @@ grid_search = GridSearchCV(
     param_grid=param_grid, 
     cv=cv_inner, 
     scoring='f1_macro', 
-    n_jobs=-1,
-    verbose=0 
+    n_jobs=1,
+    verbose=3,
+    error_score='raise'
 )
 
 # Nested CV for stability evaluation
 print("\nStarting Nested Cross-Validation on the prototype...")
-NUM_OUTER_FITS = len(cv_outer.split(X_proto, y_proto)) * len(cv_inner.split(X_proto, y_proto)) * 24
+NUM_OUTER_FITS = (cv_inner.n_splits * 24 + 1) * cv_outer.n_splits
 
 scoring_metrics = ['accuracy', 'precision_macro', 'recall_macro', 'f1_macro']
 
@@ -162,7 +138,7 @@ with tqdm_joblib(tqdm(desc="Nested CV Progress", total=NUM_OUTER_FITS)):
         grid_search, X_proto, y_proto, 
         cv=cv_outer, 
         scoring=scoring_metrics, 
-        n_jobs=-1,
+        n_jobs=1,
         return_train_score=False
     )
 
@@ -172,7 +148,7 @@ print(f"F1 Macro (Mean ± Std): {np.mean(cv_results['test_f1_macro']):.3f} ± {n
 
 # Best params research
 print("\nFinal GridSearch training on the prototype to extract parameters...")
-NUM_INNER_FITS = len(cv_inner.split(X_proto, y_proto)) * 24
+NUM_INNER_FITS = cv_inner.n_splits * 24
 
 with tqdm_joblib(tqdm(desc="Parameter Extraction", total=NUM_INNER_FITS)):
     grid_search.fit(X_proto, y_proto)

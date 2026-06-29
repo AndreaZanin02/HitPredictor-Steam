@@ -2,6 +2,7 @@ import pandas as pd
 import ast
 import re
 import numpy as np
+import csv
 from datetime import datetime
 
 
@@ -98,9 +99,36 @@ def load_and_merge(steam_app_path, steam_spy_path):
     tags, reviews, and ownership information for ML processing.
     """
     print("Loading and merging original datasets...")
-    df_store = pd.read_csv(steam_app_path)
-    df_spy = pd.read_csv(steam_spy_path)
+
+    # Skipping bad lines
+    try:
+        df_store = pd.read_csv(steam_app_path, on_bad_lines='skip', engine='python')
+        df_spy = pd.read_csv(steam_spy_path, on_bad_lines='skip', engine='python')
+    except TypeError:
+        df_store = pd.read_csv(steam_app_path, error_bad_lines=False, engine='python')
+        df_spy = pd.read_csv(steam_spy_path, error_bad_lines=False, engine='python')
+
+    # Merging
     df = pd.merge(df_store, df_spy, left_on='steam_appid', right_on='appid', suffixes=('_store', '_spy'))
+
+    # Check on the schema
+    # If a malformed line had exactly the same number of commas, but the data 
+    # still shifted (e.g., the description text ended up in the price column), 
+    # the ID column (which must be purely numeric) will contain text fragments.
+    initial_len = len(df)
+    
+    # We force the ID to be numeric. Anything that's shifted text will become NaN
+    df['steam_appid'] = pd.to_numeric(df['steam_appid'], errors='coerce')
+    
+    # Dropping shifted lines
+    df = df.dropna(subset=['steam_appid']).copy()
+    
+    dropped = initial_len - len(df)
+    if dropped > 0:
+        print(f"   -> Dropped {dropped} malformed/shifted rows post-merge.")
+
+    # Cast back the ID into int
+    df['steam_appid'] = df['steam_appid'].astype(int)
     return df
 
 """
@@ -318,19 +346,21 @@ def clean_text_descriptions(df):
     and classification by removing formatting noise.
     """
 
-    print("Cleaning HTML tags from text descriptions...")
+    print("Cleaning HTML tags and malformed characters from text descriptions...")
     
-    # Pulisce sia la descrizione dettagliata che quella breve
-    for col in ['detailed_description', 'short_description']:
+    for col in ['name_store', 'name', 'detailed_description', 'short_description']:
         if col in df.columns:
-            # 1. Rimuove i tag HTML sostituendoli con uno spazio
+            # Cast to string
+            df[col] = df[col].astype(str)
+            # Removing HTML tags
             df[col] = df[col].str.replace(r'<[^>]+>', ' ', regex=True)
+            # Removing newline, carriage return and tabs
+            df[col] = df[col].str.replace(r'[\n\r\t]+', ' ', regex=True)
+            # Removing multiple spaces
+            df[col] = df[col].str.replace(r'\s+', ' ', regex=True).str.strip()
             
-            # 2. Rimuove eventuali spazi multipli generati dalla sostituzione
-            df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
-            
-            # 3. Rimuove gli spazi iniziali e finali
-            df[col] = df[col].str.strip()
+            # Marking as NaN the nan string
+            df.loc[df[col] == 'nan', col] = np.nan
             
     return df
 
@@ -407,6 +437,7 @@ def extract_ram_features(df):
         col_name = 'min_ram_gb' if req_type == 'minimum' else 'rec_ram_gb'
         df[col_name] = req_strings.apply(parse_ram_to_gb)
 
+    df['rec_ram_gb'] = df['rec_ram_gb'].fillna(df['min_ram_gb'])
     return df
 
 def extract_gpu_cpu_features(df):
@@ -510,6 +541,67 @@ def extract_language_features(df):
     return df
 
 """
+Advanced quality filter
+├─ drops games without name or descriptions
+├─ drops games with descriptions or names that uses oriental alphabets
+└─ checks for NaN values
+"""
+def advanced_quality_filtering(df):
+    print("Applying advanced quality filters (NaN dropping, CJK/Cyrillic removal, imputations)...")
+    
+    initial_len = len(df)
+    
+    # Drop games without name or descriptions
+    df = df.dropna(subset=['name_store', 'short_description', 'detailed_description']).copy()
+    
+    # Drops games with Chinese Japanese Korean or Cirillic alphabets
+    # Range Unicode:
+    # \u4e00-\u9fff : CJK Unified Ideographs
+    # \u3040-\u30ff : Hiragana & Katakana
+    # \uac00-\ud7af : Hangul
+    # \u0400-\u04ff : Cirillic
+    cjk_cyrillic_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff]')
+    
+    def has_foreign_chars(val):
+        # If it's a list, it trasforms it to a string
+        if isinstance(val, (list, np.ndarray)):
+            val = " ".join(str(x) for x in val)
+    
+        if pd.isna(val): 
+            return False
+        
+        return bool(cjk_cyrillic_pattern.search(str(val)))
+
+    # Dropping the lines
+    for col in ['name_store', 'short_description', 'detailed_description', 'tags', 'genres', 'publishers', 'developers']:
+        if col in df.columns:
+            mask = df[col].apply(has_foreign_chars)
+            df = df[~mask]
+    
+    # Cleaning required_age (NaN -> 0)
+    if 'required_age' in df.columns:
+        df['required_age'] = pd.to_numeric(df['required_age'], errors='coerce').fillna(0).astype(int)
+        
+    # Cleaning NaN playtime
+    playtime_cols = ['average_2weeks', 'median_2weeks', 'median_forever']
+    for col in playtime_cols:
+        if col in df.columns:
+            # NaN -> 0
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+
+    # Check for binary columns errors
+    binary_cols = ['is_controller_supported', 'has_third_party_drm', 'requires_ext_account', 
+                   'platform_windows', 'platform_mac', 'platform_linux', 
+                   'req_high_end_gpu', 'req_dedicated_gpu', 'req_high_cpu', 'req_mid_cpu']
+    for col in binary_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+            df[col] = df[col].clip(0, 1)
+
+    print(f"   -> Dropped {initial_len - len(df)} rows due to quality filtering (NaNs or Foreign Chars).")
+    return df
+
+"""
 Dataset Organization
 ├─ reorder_and_rename_columns
 └─ clean_and_export
@@ -590,6 +682,6 @@ def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
         'legal_notice', 'support_info'
     ]
     df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
-    df.to_csv(output_filename, index=False)
+    df.to_csv(output_filename, index=False, quoting=csv.QUOTE_MINIMAL, escapechar='\\')
     print(f"Dataset saved into '{output_filename}' with shape: {df.shape}")
     return df

@@ -67,6 +67,7 @@ from data_cleaning_utils import (
     extract_financial_and_temporal,
     extract_restrictions_features,
     clean_text_descriptions,
+    advanced_quality_filtering,
     reorder_and_rename_columns,
     clean_and_export
 )
@@ -102,5 +103,6 @@ if __name__ == "__main__":
     df_fin_temp = extract_financial_and_temporal(df_hw)
     df_res = extract_restrictions_features(df_fin_temp)
     df_clean_text = clean_text_descriptions(df_res)
-    df_reordered = reorder_and_rename_columns(df_clean_text)
+    df_advanced = advanced_quality_filtering(df_clean_text)
+    df_reordered = reorder_and_rename_columns(df_advanced)
     df_final = clean_and_export(df_reordered, output_filename="../dataset/clean_data/clean_dataset.csv")
