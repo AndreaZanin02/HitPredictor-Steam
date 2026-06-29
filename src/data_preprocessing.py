@@ -1,157 +1,130 @@
 """
-Pipeline: Feature Encoding and Text Vectorization for Steam Dataset.
-          Pipeline to preprocess the clean dataset.
+Centralized module for preprocessing and feature encoding
+Contains classes and functions that can be reused in tuning and training
 
 This module transforms a cleaned dataset into ML-ready numerical features
 using:
 - MultiLabelBinarizer (categorical multi-label features)
 - TF-IDF (short text descriptions)
-- Sentence Transformers + PCA (long text embeddings)
-
-The pipeline is split into:
-1. Fit functions (train-only)
-2. Transform functions (train + inference)
 """
 
 import pandas as pd
+import numpy as np
 import torch
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.decomposition import PCA
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
+from sklearn.impute import SimpleImputer
 
-# -------------------------------------------------------------------------
-# TRAIN PHASE: FIT FEATURE ENCODERS
-# -------------------------------------------------------------------------
-
-# ----- Use on Train Set -----
-
-# Training MLB for categories, genres, tags, languages and extract top developers/publishers
-def fit_categorical_features(df_train, top_n=50):
+class CorrelationRemover(BaseEstimator, TransformerMixin):
     """
-    Fit encoders for categorical multi-label features.
-    Trains:
-    - categories, genres, tags, languages (MultiLabelBinarizer)
-    - top publishers and developers (frequency-based encoding)
-    Returns fitted encoders for reuse in inference.
+    Dynamically removes highly correlated features based on the training fold distribution
     """
+    def __init__(self, threshold=0.97):
+        self.threshold = threshold
+        self.to_drop_ = []
 
-    mlb_cat = MultiLabelBinarizer()
-    mlb_cat.fit(df_train['categories'].tolist() if 'categories' in df_train.columns else [])
-    
-    mlb_genres = MultiLabelBinarizer()
-    mlb_genres.fit(df_train['genres'].tolist() if 'genres' in df_train.columns else [])
+    def fit(self, X, y=None):
+        corr_matrix = X.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        self.to_drop_ = [column for column in upper.columns if any(upper[column] > self.threshold)]
+        return self
 
-    mlb_tags = MultiLabelBinarizer()
-    mlb_tags.fit(df_train['tags'].tolist() if 'tags' in df_train.columns else [])
+    def transform(self, X):
+        return X.drop(columns=self.to_drop_, errors='ignore')
 
-    mlb_langs = MultiLabelBinarizer()
-    mlb_langs.fit(df_train['languages'].tolist() if 'languages' in df_train.columns else [])
-    
-    top_publishers = df_train['publishers'].explode().dropna().value_counts().head(top_n).index.tolist() if 'publishers' in df_train.columns else []
-    top_developers = df_train['developers'].explode().dropna().value_counts().head(top_n).index.tolist() if 'developers' in df_train.columns else []
-    
-    return {
-        'mlb_cat': mlb_cat, 'mlb_genres': mlb_genres, 'mlb_tags': mlb_tags, 'mlb_langs': mlb_langs,
-        'top_publishers': top_publishers, 'top_developers': top_developers
-    }
-
-#  Training TF-IDF and PCA on descriptions
-def fit_text_features(df_train):
+# Embedding pre-computation function
+def precompute_detailed_embeddings(df, text_col='detailed_description'):
     """
-    Fit text vectorization models for short and long descriptions.
-    Components:
-    - TF-IDF on short_description (lexical features)
-    - SentenceTransformer embeddings on detailed_description
-    - PCA reduction on embeddings (dimensionality control)
-    Returns fitted models for inference reuse.
+    It performs heavy embedding extraction only once to avoid OOMs in VRAM
+    Being a frozen model, it does not generate data leakage if executed upstream
     """
-
-    df_train['short_description'] = df_train['short_description'].fillna("")
-    df_train['detailed_description'] = df_train['detailed_description'].fillna("")
-    
-    tfidf = TfidfVectorizer(max_features=30, stop_words='english')
-    tfidf.fit(df_train['short_description'])
-    
+    print("Pre-compuation of textual embeddings...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = SentenceTransformer('all-mpnet-base-v2', device=device)
-    embeddings = model.encode(df_train['detailed_description'].tolist(), show_progress_bar=True)
     
-    pca = PCA(n_components=50)
-    pca.fit(embeddings)
+    texts = df[text_col].fillna("").tolist()
+    embeddings = model.encode(texts, show_progress_bar=True)
     
-    return {'tfidf': tfidf, 'pca': pca, 'st_model': model}
-
-# -------------------------------------------------------------------------
-# INFERENCE PHASE: TRANSFORM FEATURES
-# -------------------------------------------------------------------------
-
-
-# ----- Use on Train and Test/Inference sets -----
-
-# Apply the categorical transformer
-def transform_categorical_features(df, fitted_objects):
-    """
-    Apply fitted categorical encoders to dataset.
-    Expands:
-    - Multi-label features into binary columns
-    - Top publishers/developers into one-hot indicators
-    Drops original categorical columns after encoding.
-    """
-    df_out = df.copy()
+    emb_cols = [f"raw_emb_{i}" for i in range(embeddings.shape[1])]
+    df_emb = pd.DataFrame(embeddings, columns=emb_cols, index=df.index)
     
-    if 'categories' in df_out.columns:
-        encoded = pd.DataFrame(fitted_objects['mlb_cat'].transform(df_out['categories']), columns=[f"cat_{c}" for c in fitted_objects['mlb_cat'].classes_], index=df_out.index)
-        df_out = pd.concat([df_out, encoded], axis=1)
+    # Cleaning VRAM after the computation
+    del model
+    if device == 'cuda':
+        torch.cuda.empty_cache()
         
-    if 'genres' in df_out.columns:
-        encoded = pd.DataFrame(fitted_objects['mlb_genres'].transform(df_out['genres']), columns=[f"genre_{c}" for c in fitted_objects['mlb_genres'].classes_], index=df_out.index)
-        df_out = pd.concat([df_out, encoded], axis=1)
+    return pd.concat([df.drop(columns=[text_col], errors='ignore'), df_emb], axis=1), emb_cols
 
-    if 'tags' in df_out.columns:
-        encoded = pd.DataFrame(fitted_objects['mlb_tags'].transform(df_out['tags']), columns=[f"tag_{c}" for c in fitted_objects['mlb_tags'].classes_], index=df_out.index)
-        df_out = pd.concat([df_out, encoded], axis=1)
 
-    if 'languages' in df_out.columns:
-        encoded = pd.DataFrame(fitted_objects['mlb_langs'].transform(df_out['languages']), columns=[f"lang_{c}" for c in fitted_objects['mlb_langs'].classes_], index=df_out.index)
-        df_out = pd.concat([df_out, encoded], axis=1)
+# Categorical encoder and TF-IDF
+class SteamFeatureExtractor(BaseEstimator, TransformerMixin):
+    """
+    It encapsulates the fitting of MultiLabelBinarizer and TF-IDF.
+    When inserted into the Pipeline, it guarantees the fit only on the current training fold
+    """
+    def __init__(self, top_n_creators=50, max_tfidf_features=30):
+        self.top_n_creators = top_n_creators
+        self.max_tfidf_features = max_tfidf_features
+        
+    def fit(self, X, y=None):
+        # Setup and fit binarizers on the train fold data
+        self.mlb_cat_ = MultiLabelBinarizer().fit(X['categories'].tolist() if 'categories' in X.columns else [])
+        self.mlb_genres_ = MultiLabelBinarizer().fit(X['genres'].tolist() if 'genres' in X.columns else [])
+        self.mlb_tags_ = MultiLabelBinarizer().fit(X['tags'].tolist() if 'tags' in X.columns else [])
+        self.mlb_langs_ = MultiLabelBinarizer().fit(X['languages'].tolist() if 'languages' in X.columns else [])
+        
+        self.top_publishers_ = X['publishers'].explode().dropna().value_counts().head(self.top_n_creators).index.tolist() if 'publishers' in X.columns else []
+        self.top_developers_ = X['developers'].explode().dropna().value_counts().head(self.top_n_creators).index.tolist() if 'developers' in X.columns else []
+        
+        # TF-IDF fit only on the short_description of this specific fold
+        short_desc = X['short_description'].fillna("") if 'short_description' in X.columns else pd.Series([""]*len(X))
+        self.tfidf_ = TfidfVectorizer(max_features=self.max_tfidf_features, stop_words='english')
+        self.tfidf_.fit(short_desc)
 
-    if 'publishers' in df_out.columns:
-        for pub in fitted_objects['top_publishers']:
-            df_out[f'pub_{str(pub).replace(" ", "_")}'] = df_out['publishers'].apply(lambda x: 1 if pub in x else 0)
+        # Removing NaN from the RAM using the median of the training set
+        if 'min_ram_gb' in X.columns:
+            self.ram_imputer_ = SimpleImputer(strategy='median')
+            self.ram_imputer_.fit(X[['min_ram_gb']])
+        
+        return self
+        
+    def transform(self, X):
+        df_out = X.copy()
+        
+        # Applying MultiLabelBinarizer
+        for col, mlb, prefix in [('categories', self.mlb_cat_, 'cat'), ('genres', self.mlb_genres_, 'genre'), 
+                                 ('tags', self.mlb_tags_, 'tag'), ('languages', self.mlb_langs_, 'lang')]:
+            if col in df_out.columns:
+                encoded = pd.DataFrame(mlb.transform(df_out[col]), columns=[f"{prefix}_{c}" for c in mlb.classes_], index=df_out.index)
+                df_out = pd.concat([df_out, encoded], axis=1)
+                
+        # Analysis of creators
+        if 'publishers' in df_out.columns:
+            pub_cols = {f'pub_{str(p).replace(" ", "_")}': df_out['publishers'].apply(lambda x: 1 if p in x else 0) for p in self.top_publishers_}
+            df_out = pd.concat([df_out, pd.DataFrame(pub_cols, index=df_out.index)], axis=1)
             
-    if 'developers' in df_out.columns:
-        for dev in fitted_objects['top_developers']:
-            df_out[f'dev_{str(dev).replace(" ", "_")}'] = df_out['developers'].apply(lambda x: 1 if dev in x else 0)
+        if 'developers' in df_out.columns:
+            dev_cols = {f'dev_{str(d).replace(" ", "_")}': df_out['developers'].apply(lambda x: 1 if d in x else 0) for d in self.top_developers_}
+            df_out = pd.concat([df_out, pd.DataFrame(dev_cols, index=df_out.index)], axis=1)
+            
+        # Applying TF-IDF
+        if 'short_description' in df_out.columns:
+            tfidf_matrix = self.tfidf_.transform(df_out['short_description'].fillna(""))
+            tfidf_cols = [f"tfidf_{w}" for w in self.tfidf_.get_feature_names_out()]
+            df_tfidf = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df_out.index)
+            df_out = pd.concat([df_out, df_tfidf], axis=1)
 
-    return df_out.drop(columns=['categories', 'genres', 'tags', 'publishers', 'developers', 'languages'], errors='ignore')
-
-# Apply TF-IDF e PCA on the text
-def transform_text_features(df, fitted_objects):
-    """
-    Apply TF-IDF + embedding-based transformations to text fields.
-    Generates:
-    - TF-IDF features from short_description
-    - PCA-reduced sentence embeddings from detailed_description
-    Drops original text columns after transformation.
-    """
-
-    df_out = df.copy()
-    df_out['short_description'] = df_out['short_description'].fillna("")
-    df_out['detailed_description'] = df_out['detailed_description'].fillna("")
-    
-    # Transform TF-IDF
-    tfidf_matrix = fitted_objects['tfidf'].transform(df_out['short_description'])
-    tfidf_cols = [f"tfidf_{w}" for w in fitted_objects['tfidf'].get_feature_names_out()]
-    df_tfidf = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df_out.index)
-    
-    # Transform Embeddings + PCA
-    embeddings = fitted_objects['st_model'].encode(df_out['detailed_description'].tolist(), show_progress_bar=False)
-    pca_matrix = fitted_objects['pca'].transform(embeddings)
-    pca_cols = [f"pca_{i}" for i in range(pca_matrix.shape[1])]
-    df_pca = pd.DataFrame(pca_matrix, columns=pca_cols, index=df_out.index)
-    
-    df_out = pd.concat([df_out, df_tfidf, df_pca], axis=1)
-    return df_out.drop(columns=['short_description', 'detailed_description'], errors='ignore')
-
-# ------------------------------------------------
+        if hasattr(self, 'ram_imputer_') and 'min_ram_gb' in df_out.columns:
+            # NaN -> median calculated during the fit
+            df_out['min_ram_gb'] = self.ram_imputer_.transform(df_out[['min_ram_gb']])
+            
+        if 'rec_ram_gb' in df_out.columns:
+            df_out['rec_ram_gb'] = df_out['rec_ram_gb'].fillna(df_out['min_ram_gb'])
+            
+        # Dropping original textual columns
+        cols_to_drop = ['categories', 'genres', 'tags', 'publishers', 'developers', 'languages', 'short_description']
+        df_out = df_out.drop(columns=[c for c in cols_to_drop if c in df_out.columns], errors='ignore')
+        
+        return df_out.select_dtypes(include=['number', 'bool'])
