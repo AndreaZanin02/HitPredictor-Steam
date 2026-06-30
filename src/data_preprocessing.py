@@ -54,6 +54,24 @@ def dynamic_undersample(y):
     return {0: safe_target}
 
 
+class FeatureNameSanitizer(BaseEstimator, TransformerMixin):
+    """
+    Dynamically renames DataFrame columns by removing the prohibited characters
+    ([, ], and <) from XGBoost/LightGBM.
+    This should be inserted into the pipeline before selectors or classifiers
+    """
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        if isinstance(X, pd.DataFrame):
+            X_clean = X.copy()
+            # Replacing problematic characthers with a _
+            X_clean.columns = X_clean.columns.str.replace(r'[\[\]<]', '_', regex=True)
+            return X_clean
+        return X
+
+
 # Embedding pre-computation function
 def precompute_detailed_embeddings(df, text_col='detailed_description'):
     """

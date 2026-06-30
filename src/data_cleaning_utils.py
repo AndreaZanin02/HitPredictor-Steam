@@ -4,6 +4,7 @@ import re
 import numpy as np
 import csv
 from datetime import datetime
+from pathlib import Path
 
 
 """
@@ -682,6 +683,9 @@ def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
         'legal_notice', 'support_info'
     ]
     df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
+
+    # Saving CSV
+    Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_filename, index=False, quoting=csv.QUOTE_MINIMAL, escapechar='\\')
     print(f"Dataset saved into '{output_filename}' with shape: {df.shape}")
     return df

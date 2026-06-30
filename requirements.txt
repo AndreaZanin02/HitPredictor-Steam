@@ -7,3 +7,5 @@ kaggle
 kagglehub
 tqdm
 joblibxx
+xgboost
+imblearn
