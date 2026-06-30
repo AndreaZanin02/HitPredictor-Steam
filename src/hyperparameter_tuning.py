@@ -11,18 +11,34 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 from sklearn.feature_selection import SelectFromModel
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.under_sampling import RandomUnderSampler, TomekLinks
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-import joblib
 from tqdm.auto import tqdm
 import ast
-from data_preprocessing import precompute_detailed_embeddings, SteamFeatureExtractor, CorrelationRemover, dynamic_undersample
+import warnings
+from data_preprocessing import precompute_detailed_embeddings, SteamFeatureExtractor, CorrelationRemover, dynamic_undersample, FeatureNameSanitizer
 
-sklearn.set_config(transform_output="pandas")
+sklearn.set_config(transform_output="pandas") 
+warnings.filterwarnings('ignore', category=UserWarning)
+
+class NumpyEncoder(json.JSONEncoder):
+    """ Custom encoder for converter the NumPy types for the JSON files"""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super(NumpyEncoder, self).default(obj)
+
 
 class WeightedXGBClassifier(XGBClassifier):
     """
@@ -135,21 +151,21 @@ def main():
             }
         },
         'RandomForest': {
-            'selector_estimator': RandomForestClassifier(n_estimators=50, class_weight='balanced', random_state=SEED, n_jobs=4),
-            'estimator': RandomForestClassifier(class_weight='balanced', random_state=SEED, n_jobs=4),
+            'selector_estimator': RandomForestClassifier(n_estimators=50, class_weight='balanced', random_state=SEED, n_jobs=-1),
+            'estimator': RandomForestClassifier(class_weight='balanced', random_state=SEED, n_jobs=-1),
             'param_grid': {
                 'classifier__n_estimators': [100, 200],
-                'classifier__max_depth': [None, 20],
+                'classifier__max_depth': [None, 10],
                 'classifier__min_samples_split': [2, 5],
                 'feature_selection__threshold': ['median', '0.75*median', 'mean']
             }
         },
         'XGBoost': {
-            'selector_estimator': WeightedXGBClassifier(n_estimators=50, random_state=SEED, n_jobs=4, eval_metric='logloss', tree_method='hist'),
-            'estimator': WeightedXGBClassifier(random_state=SEED, n_jobs=4, eval_metric='logloss', tree_method='hist'),
+            'selector_estimator': WeightedXGBClassifier(n_estimators=50, random_state=SEED, n_jobs=-1, eval_metric='mlogloss', tree_method='hist', device='cuda'),
+            'estimator': WeightedXGBClassifier(random_state=SEED, n_jobs=-1, eval_metric='mlogloss', tree_method='hist', device='cuda'),
             'param_grid': {
                 'classifier__n_estimators': [100, 200],
-                'classifier__max_depth': [3, 6],
+                'classifier__max_depth': [4, 6, 8],
                 'classifier__learning_rate': [0.01, 0.1],
                 'feature_selection__threshold': ['median', 'mean']
             }
@@ -175,7 +191,10 @@ def main():
             # Dynamic undersampling of class 0
             ('rus', RandomUnderSampler(sampling_strategy=dynamic_undersample, random_state=SEED)),
             # Cleaning bounds between classes
-            ('tomek', TomekLinks()), 
+            ('tomek', TomekLinks()),
+
+            # Cleaning features name
+            ('sanitizer', FeatureNameSanitizer()),
 
             ('feature_selection', SelectFromModel(config['selector_estimator'])),
             ('classifier', config['estimator'])
@@ -252,7 +271,7 @@ def main():
     # Saving JSON
     output_file = "tuning_results.json"
     with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(all_results, f, indent=4)
+        json.dump(all_results, f, indent=4, cls=NumpyEncoder)
     
     print(f"\nTuning complete. Data saved in '{output_file}'")
 
