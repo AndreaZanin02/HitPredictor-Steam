@@ -9,3 +9,6 @@ tqdm
 joblibxx
 xgboost
 imblearn
+seaborn
+lime
+shap
