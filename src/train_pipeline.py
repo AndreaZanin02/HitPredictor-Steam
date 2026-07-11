@@ -9,17 +9,23 @@ import matplotlib.pyplot as plt
 import os
 import ast
 import warnings
+import joblib
+from scipy.optimize import minimize
+import torch
 import sklearn
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.model_selection import cross_val_predict, StratifiedKFold, train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, f1_score
 from imblearn.pipeline import Pipeline as ImbPipeline
 from imblearn.under_sampling import RandomUnderSampler, TomekLinks
 from sklearn.feature_selection import SelectFromModel
-from data_preprocessing import (precompute_detailed_embeddings, SteamFeatureExtractor, 
-                                CorrelationRemover, dynamic_undersample, FeatureNameSanitizer)
-from hyperparameter_tuning import scaler_and_pca, WeightedXGBClassifier
+from data_preprocessing import (
+    precompute_detailed_embeddings, SteamFeatureExtractor, CorrelationRemover, 
+    dynamic_undersample, FeatureNameSanitizer, DynamicSMOTENC, dynamic_oversample
+)
+from hyperparameter_tuning import get_scaler_and_pca, WeightedXGBClassifier
 
 sklearn.set_config(transform_output="pandas")
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 warnings.filterwarnings('ignore')
 
 def main():
@@ -58,7 +64,7 @@ def main():
     # If --pre_release is active, post-release features are dropped
     if args.pre_release:
         post_release_feature = [
-            'days_since_release', 'num_achievements', 'metacritic_score', 'review_ratio',
+            'num_achievements', 'metacritic_score', 'review_ratio', 'num_dlc',
             'discount', 'average_forever', 'average_2weeks', 'median_forever', 'median_2weeks'
         ] 
         cols_to_drop = [col for col in post_release_feature if col in df.columns]
@@ -91,6 +97,22 @@ def main():
     X_test_proc = df_test_proc.drop(columns=['target_owners'])
     y_test_proc = df_test_proc['target_owners']
 
+    # Numerical columns
+    all_numeric_cols = [
+        'price', 'release_year', 'min_ram_gb', 'rec_ram_gb', 'required_age', 
+        'num_dlc', 'num_achievements', 'num_languages_supported', 'metacritic_score', 
+        'review_ratio', 'discount', 'average_forever', 'average_2weeks', 
+        'median_forever', 'median_2weeks'
+    ]
+    numeric_cols = [col for col in all_numeric_cols if col in X_train_proc.columns]
+
+    # Complete list of categorical columns
+    categorical_cols = ['release_month']
+
+    # PCA calculation
+    scaler_and_pca = get_scaler_and_pca(numeric_cols, categorical_cols, emb_cols, SEED)
+
+
     # Best model configuration
     xgb_estimator = WeightedXGBClassifier(
         learning_rate=0.1,
@@ -100,19 +122,20 @@ def main():
         n_jobs=-1,
         eval_metric='mlogloss',
         tree_method='hist',
-        device='cuda'
+        device=DEVICE
     )
 
     xgb_selector = WeightedXGBClassifier(
-        n_estimators=50, random_state=SEED, n_jobs=-1, eval_metric='mlogloss', tree_method='hist', device='cuda'
+        n_estimators=50, random_state=SEED, n_jobs=-1, eval_metric='mlogloss', tree_method='hist', device=DEVICE
     )
 
     # Training pipeline
     final_pipe = ImbPipeline([
-        ('steam_extractor', SteamFeatureExtractor()),
+        ('steam_extractor', SteamFeatureExtractor(max_tfidf_features=30)),
         ('scaler_and_pca', scaler_and_pca),
         ('corr_remover', CorrelationRemover(threshold=0.95)),
         ('rus', RandomUnderSampler(sampling_strategy=dynamic_undersample, random_state=SEED)),
+        ('smote_nc', DynamicSMOTENC(sampling_strategy=dynamic_oversample, k_neighbors=3, random_state=SEED)),
         ('tomek', TomekLinks()),
         ('sanitizer', FeatureNameSanitizer()),
         ('feature_selection', SelectFromModel(xgb_selector, threshold='mean')),
@@ -123,10 +146,56 @@ def main():
     print("\nFinal model training in progress...")
     final_pipe.fit(X_train_proc, y_train_proc)
     
-    # Evaluation
-    y_pred = final_pipe.predict(X_test_proc)
-    print("\nClassification report on test set:")
-    print(classification_report(y_test_proc, y_pred))
+    # Weights calibration
+    print("\nWeights calibration (out-of-fold on train)...")
+
+    cv_calibration = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+
+    # Each row of X_train_proc receives a predict_proba from a model
+    # that, for that row, was in the validation fold (it didn't see it in fit --> no leakage)
+    y_proba_oof = cross_val_predict(
+        final_pipe, X_train_proc, y_train_proc,
+        cv=cv_calibration, method='predict_proba', n_jobs=1
+    )
+
+    def loss_function(weights):
+        weighted_proba = y_proba_oof * weights
+        pred = np.argmax(weighted_proba, axis=1)
+        return -f1_score(y_train_proc, pred, average='macro')
+
+    initial_weights = [1.0, 1.0, 1.0, 1.0, 1.0]
+    bounds = [(0.1, 2.0)] * 5
+
+    result = minimize(loss_function, initial_weights, bounds=bounds,
+                    method='Powell', options={'xtol': 1e-3, 'ftol': 1e-3})
+    best_weights = result.x
+    print(f"-> Best weights: {np.round(best_weights, 3)}")
+
+    # Final evaluation using the best weights
+    y_proba_test = final_pipe.predict_proba(X_test_proc)
+    final_proba = y_proba_test * best_weights
+    y_pred_adjusted = np.argmax(final_proba, axis=1)
+
+    print("\nClassification report:")
+    print(classification_report(y_test_proc, y_pred_adjusted))
+
+    print("\nGenerating Confusion Matrix...")
+    cm = confusion_matrix(y_test_proc, y_pred_adjusted)
+    print(cm)
+
+    # Plotting confusion matrix
+    tier_labels = ["Tier 0", "Tier 1", "Tier 2", "Tier 3", "Tier 4"]
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=tier_labels)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, values_format='d', ax=ax)
+
+    plt.title("Confusion Matrix (calibrated thresholds)", fontsize=14, pad=15)
+    plt.tight_layout()
+
+    # Saving the plot
+    plt.savefig(os.path.join(base_dir, 'calibrated_confusion_matrix.png'), dpi=150)
+    print("-> Confusion Matrix saved as 'calibrated_confusion_matrix.png'") 
+    plt.close()
 
     # ------------------------ EXPLAINABLE AI SECTION ----------------------------------
     print("\nData preparation for eXplainable AI (XAI)...")
@@ -139,6 +208,7 @@ def main():
     
     X_test_transformed_df = pd.DataFrame(X_test_transformed, columns=feature_names)
 
+
     # XGBOOST NATIVE FEATURE IMPORTANCE
     print("Generating XGBoost Native Importance...")
     plt.figure(figsize=(10, 8))
@@ -146,6 +216,7 @@ def main():
     plt.tight_layout()
     plt.savefig(os.path.join(xai_dir, 'xgb_native_importance.png'))
     plt.close()
+
 
     # SHAP
     print("Calculating SHAP values...")
@@ -166,19 +237,39 @@ def main():
     
     shap_values = explainer(X_test_sample)
 
-    print("Generating SHAP summary plot...")
-    plt.figure()
-    shap.summary_plot(shap_values, X_test_sample, show=False)
-    plt.tight_layout()
-    plt.savefig(os.path.join(xai_dir, 'shap_summary_plot.png'))
-    plt.close()
+    # Real names of the tiers
+    tier_labels = [
+        "Tier 0 (<20k)", 
+        "Tier 1 (20k-100k)", 
+        "Tier 2 (100k-500k)", 
+        "Tier 3 (500k-2M)", 
+        "Tier 4 (>2M)"
+    ]
 
-    print("Generating SHAP waterfall plot of a istance...")
-    plt.figure()
-    shap.plots.waterfall(shap_values[0], show=False)
-    plt.tight_layout()
-    plt.savefig(os.path.join(xai_dir, 'shap_waterfall.png'))
-    plt.close()
+    print("\nGenerating SHAP plots for each tier...")
+    for class_idx in range(5):
+        print(f"--> Elaborating {tier_labels[class_idx]}...")
+        
+        # Beeswarm plot of each class
+        plt.figure(figsize=(12, 8))
+        # Slicing: selecting games of the current class
+        shap.plots.beeswarm(shap_values[:, :, class_idx], show=False)
+        plt.title(f"Importance of the Feature for - {tier_labels[class_idx]}", fontsize=14, pad=15)
+        plt.tight_layout()
+        plt.savefig(os.path.join(xai_dir, f'shap_beeswarm_class_{class_idx}.png'), dpi=150)
+        plt.close()
+
+        # Waterfall plot for the first instance of each class
+        plt.figure(figsize=(12, 6))
+        # Slicing: istance 0, of the current tier
+        shap.plots.waterfall(shap_values[0, :, class_idx], show=False)
+        plt.title(f"Explaining istance (Idx 0) - {tier_labels[class_idx]}", fontsize=14, pad=15)
+        plt.tight_layout()
+        plt.savefig(os.path.join(xai_dir, f'shap_waterfall_class_{class_idx}.png'), dpi=150)
+        plt.close()
+        
+    print(f"All the SHAP plots are saved in: {xai_dir}")
+
 
     # LIME
     print("Executing LIME...")
@@ -204,7 +295,7 @@ def main():
     lime_explainer = lime.lime_tabular.LimeTabularExplainer(
         training_data=lime_bg_data,
         feature_names=feature_names,
-        class_names=['Not Owner', 'Owner'],
+        class_names=['Tier 0 (<20k)', 'Tier 1 (20-100k)', 'Tier 2 (100-500k)', 'Tier 3 (500k-2M)', 'Tier 4 (>2M)'],
         mode='classification',
         random_state=SEED
     )
@@ -212,15 +303,18 @@ def main():
     instance_idx = 0
     instance_to_explain = X_test_transformed_df.iloc[instance_idx].values
 
-    predict_fn = lambda x: model.predict_proba(x)
-
+    predict_fn = lambda x: model.predict_proba(pd.DataFrame(x, columns=feature_names))
     exp = lime_explainer.explain_instance(
         data_row=instance_to_explain, 
         predict_fn=predict_fn,
         num_features=10 
     )
     
-    exp.save_to_file(os.path.join(xai_dir, 'lime_explanation.html'))
+    # Saving LIME plot
+    fig = exp.as_pyplot_figure()
+    fig.tight_layout() 
+    fig.savefig(os.path.join(xai_dir, 'lime_explanation.png'), bbox_inches='tight', dpi=300)
+    plt.close(fig)
     
     print(f"\nXAI completed. Check the results in '{xai_dir}'")
 
@@ -238,13 +332,17 @@ def main():
     print("Training the final model on the entire dataset...")
     final_pipe.fit(X_full_proc, y_full_proc)
 
-    # Saving the model
-    import joblib
+    # Dictionary with models and weights
+    production_artifact = {
+    'pipeline': final_pipe,
+    'best_weights': best_weights
+    }
+
     model_filename = 'pre_release_model.pkl' if args.pre_release else 'post_release_model.pkl'
     model_path = os.path.join(base_dir, model_filename)
-    
-    joblib.dump(final_pipe, model_path)
-    print(f"Final model trained and saved successfully in: {model_path}")
+
+    # Saving model and weights
+    joblib.dump(production_artifact, model_path)
 
 
 if __name__ == "__main__":
