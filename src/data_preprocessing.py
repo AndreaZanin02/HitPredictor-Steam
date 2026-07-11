@@ -6,6 +6,9 @@ This module transforms a cleaned dataset into ML-ready numerical features
 using:
 - MultiLabelBinarizer (categorical multi-label features)
 - TF-IDF (short text descriptions)
+
+Offers dynamic undersampling tools for reducing the size of class 0 and
+SMOTENC to oversample the minority classes 3 and 4
 """
 
 import pandas as pd
@@ -16,6 +19,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
 from sklearn.impute import SimpleImputer
+from imblearn.over_sampling import SMOTENC
+
 
 class CorrelationRemover(BaseEstimator, TransformerMixin):
     """
@@ -52,6 +57,59 @@ def dynamic_undersample(y):
     safe_target = max(target_class_0, counts.get(1, 0))
     
     return {0: safe_target}
+
+
+class DynamicSMOTENC(BaseEstimator, TransformerMixin):
+    """
+    Wrapper around SMOTENC with dynamic detection of categorical/binary columns (nunique <= 2),
+    necessary because SteamFeatureExtractor generates columns whose names/numbers change with each fold.
+    """
+
+    # k_neighbors is set to 3 beacuse of the high number of features of the dataset
+    def __init__(self, sampling_strategy='auto', k_neighbors=3, random_state=None):
+        self.sampling_strategy = sampling_strategy
+        self.k_neighbors = k_neighbors
+        self.random_state = random_state
+
+    def fit_resample(self, X, y):
+        is_df = isinstance(X, pd.DataFrame)
+        columns = X.columns if is_df else None
+
+        cat_mask = [X[col].nunique() <= 2 for col in X.columns] if is_df else None
+
+        smote = SMOTENC(
+            categorical_features=cat_mask,
+            sampling_strategy=self.sampling_strategy,
+            k_neighbors=self.k_neighbors,
+            random_state=self.random_state
+        )
+        X_res, y_res = smote.fit_resample(X, y)
+
+        # Ensures a DataFrame with column names remains,
+        # required for subsequent feature_selections and xai plots
+        if is_df and not isinstance(X_res, pd.DataFrame):
+            X_res = pd.DataFrame(X_res, columns=columns)
+
+        return X_res, y_res
+
+
+def dynamic_oversample(y):
+    """
+    Moderate target for tier 3/tier 4, proportional to the current fold's class 2
+    """
+    counts = pd.Series(y).value_counts().to_dict()
+    strategy = {}
+
+    if 3 in counts:
+        target_3 = max(counts[3], int(counts.get(2, counts[3]) * 0.4))
+        strategy[3] = target_3
+
+    if 4 in counts:
+        base_3 = strategy.get(3, counts.get(3, counts[4]))
+        target_4 = max(counts[4], int(base_3 * 0.5))
+        strategy[4] = target_4
+
+    return strategy
 
 
 class FeatureNameSanitizer(BaseEstimator, TransformerMixin):
@@ -118,7 +176,7 @@ class SteamFeatureExtractor(BaseEstimator, TransformerMixin):
         
         # TF-IDF fit only on the short_description of this specific fold
         short_desc = X['short_description'].fillna("") if 'short_description' in X.columns else pd.Series([""]*len(X))
-        self.tfidf_ = TfidfVectorizer(max_features=self.max_tfidf_features, stop_words='english')
+        self.tfidf_ = TfidfVectorizer(max_features=self.max_tfidf_features, stop_words='english', ngram_range=(1, 2))
         self.tfidf_.fit(short_desc)
 
         # Removing NaN from the RAM using the median of the training set
@@ -153,7 +211,7 @@ class SteamFeatureExtractor(BaseEstimator, TransformerMixin):
         # Applying TF-IDF
         if 'short_description' in df_out.columns:
             tfidf_matrix = self.tfidf_.transform(df_out['short_description'].fillna(""))
-            tfidf_cols = [f"tfidf_{w}" for w in self.tfidf_.get_feature_names_out()]
+            tfidf_cols = [f"tfidf_{w.replace(' ', '_')}" for w in self.tfidf_.get_feature_names_out()]
             df_tfidf = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df_out.index)
             new_features.append(df_tfidf)
 
