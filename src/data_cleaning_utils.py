@@ -454,7 +454,11 @@ def extract_gpu_cpu_features(df):
     """
     print("Extracting CPU/GPU features (vectorized)...")
     
-    reqs = (df.get('pc_requirements', '') + df.get('mac_requirements', '') + df.get('linux_requirements', '')).fillna('').str.lower()
+    reqs = (
+        df.get('pc_requirements', pd.Series(['']*len(df))).fillna('') + ' ' +
+        df.get('mac_requirements', pd.Series(['']*len(df))).fillna('') + ' ' +
+        df.get('linux_requirements', pd.Series(['']*len(df))).fillna('')
+    ).str.lower()
     
     # Booleani 0/1 to show if a specific CPU/GPU is required
     df['req_high_end_gpu'] = reqs.str.contains(r'rtx\s*\d{4}|rx\s*\d{4}|radeon\s*vii', regex=True).astype(int)
@@ -473,7 +477,8 @@ def extract_financial_and_temporal(df):
     Extract financial, temporal, and engagement features.
     Creates:
     - price
-    - days_since_release
+    - release_year
+    - release_month
     - review_ratio
     Removes invalid or future-dated releases.
     Review ratio measures user sentiment from positive/negative reviews.
@@ -501,14 +506,21 @@ def extract_financial_and_temporal(df):
         parsed_dates = df['release_date'].apply(lambda x: parse_dict(x).get('date', '') if isinstance(x, str) and '{' in x else str(x))
         dates = parsed_dates.apply(parse_date)
         
-        reference_date = pd.to_datetime(datetime.now().date()) 
-        df['days_since_release'] = (reference_date - dates).dt.days
-
+        # Temp column for using filters
+        df['temp_date'] = dates
         initial_len = len(df)
-        df = df[df['days_since_release'] > 0].copy()
-        print(f"   -> Dropped {initial_len - len(df)} rows with missing or future/zero release dates.")
+        
+        # Dropping games with not already published
+        reference_date = pd.to_datetime(datetime.now().date())
+        df = df[df['temp_date'].notna() & (df['temp_date'] <= reference_date)].copy()
+        print(f"   -> Dropped {initial_len - len(df)} rows with missing or future release dates.")
 
-        df['days_since_release'] = df['days_since_release'].astype(int)
+        # Extracting month and year
+        df['release_year'] = df['temp_date'].dt.year.astype(int)
+        df['release_month'] = df['temp_date'].dt.month.astype(int)
+        
+        # Dropping temp column
+        df = df.drop(columns=['temp_date'])
 
     if 'positive' in df.columns and 'negative' in df.columns:
         total_reviews = df['positive'] + df['negative']
@@ -622,7 +634,7 @@ def reorder_and_rename_columns(df):
     
     df = df.rename(columns={'name_store': 'name'})
     
-    group_name = ['name', 'required_age', 'developers', 'publishers', 'days_since_release']
+    group_name = ['name', 'required_age', 'developers', 'publishers', 'release_year', 'release_month']
     group_topic = ['categories', 'genres', 'tags', 'detailed_description', 'short_description', 'num_dlc', 'num_achievements']
     group_lan = ['languages', 'num_languages_supported']
     group_scores = ['metacritic_score', 'review_ratio']
