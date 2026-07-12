@@ -173,15 +173,15 @@ def process_target_owners(df):
         '100,000,000 .. 200,000,000': 4
     }
     
-    # Mappatura dei valori
+    # Map raw SteamSpy ranges to ordinal tiers
     df['target_owners'] = df['owners'].map(steamspy_tiers)
     
-    # Controllo per eventuali valori anomali
+    # Check for any unmapped (invalid or missing) 'owners' values
     unmapped = df['target_owners'].isna().sum()
     if unmapped > 0:
-        print(f"   -> WARNING: {unmapped} lines dropped (range 'owners' non valido o mancante)")
+        print(f"   -> WARNING: {unmapped} lines dropped (invalid or missing 'owners' range)")
     
-    # Rimozione righe con target nullo e cast esplicito a intero
+    # Drop rows with a null target and cast to integer
     df = df.dropna(subset=['target_owners']).copy()
     df['target_owners'] = df['target_owners'].astype(int)
     
@@ -301,8 +301,9 @@ def extract_json_features(df):
     - metacritic_score
     - num_achievements
     - categories, genres, tags (normalized token lists)
-    Converts nested structures into tabular features suitable for ML.
-    Ensures compatibility with standard machine learning pipelines.
+    - publishers, developers (normalized token lists)
+    Converts nested structures into tabular features suitable for ML
+    Ensures compatibility with standard machine learning pipelines
     """
 
     print("Extraction features from JSON structures...")
@@ -335,8 +336,9 @@ Text Processing
 # Cleaning HTML tags from descriptions
 def clean_text_descriptions(df):
     """
-    Remove HTML tags and normalize whitespace in Steam descriptions.
+    Remove HTML tags and normalize whitespace in Steam text fields.
     Cleans:
+    - name_store, name
     - detailed_description
     - short_description
     Steps:
@@ -344,7 +346,7 @@ def clean_text_descriptions(df):
     - Normalize repeated whitespace
     - Trim leading/trailing spaces
     Improves text quality for NLP tasks like TF-IDF, embeddings,
-    and classification by removing formatting noise.
+    and classification by removing formatting noise
     """
 
     print("Cleaning HTML tags and malformed characters from text descriptions...")
@@ -399,7 +401,7 @@ def extract_ram_features(df):
             return np.nan
             
         text = str(text).lower()
-        # Preentive cleaning
+        # Preventive cleaning
         text = re.sub(r'(video\s*memory|vram|graphics\s*memory|storage|hard\s*drive|space)', '', text)
         
         ram_pattern = re.compile(r'(?:memory[:\s-]*(\d+[\.,]?\d*)\s*(mb|gb|kb))|(?:(\d+[\.,]?\d*)\s*(mb|gb|kb)\s*ram)')
@@ -460,7 +462,7 @@ def extract_gpu_cpu_features(df):
         df.get('linux_requirements', pd.Series(['']*len(df))).fillna('')
     ).str.lower()
     
-    # Booleani 0/1 to show if a specific CPU/GPU is required
+    # Boolean flags (0/1) indicating whether a specific CPU/GPU tier is required
     df['req_high_end_gpu'] = reqs.str.contains(r'rtx\s*\d{4}|rx\s*\d{4}|radeon\s*vii', regex=True).astype(int)
     df['req_dedicated_gpu'] = reqs.str.contains(r'gtx|geforce|radeon\s*r|nvidia|amd', regex=True).astype(int)
     df['req_high_cpu'] = reqs.str.contains(r'i7|i9|ryzen\s*5|ryzen\s*7', regex=True).astype(int)
@@ -510,7 +512,7 @@ def extract_financial_and_temporal(df):
         df['temp_date'] = dates
         initial_len = len(df)
         
-        # Dropping games with not already published
+        # Drop rows with a missing release date or a release date in the future (not yet released)
         reference_date = pd.to_datetime(datetime.now().date())
         df = df[df['temp_date'].notna() & (df['temp_date'] <= reference_date)].copy()
         print(f"   -> Dropped {initial_len - len(df)} rows with missing or future release dates.")
@@ -556,8 +558,8 @@ def extract_language_features(df):
 """
 Advanced quality filter
 ├─ drops games without name or descriptions
-├─ drops games with descriptions or names that uses oriental alphabets
-└─ checks for NaN values
+├─ drops games with names/descriptions/tags containing CJK or Cyrillic scripts
+└─ imputes/normalizes remaining NaN values in numeric and binary columns
 """
 def advanced_quality_filtering(df):
     print("Applying advanced quality filters (NaN dropping, CJK/Cyrillic removal, imputations)...")
@@ -567,16 +569,16 @@ def advanced_quality_filtering(df):
     # Drop games without name or descriptions
     df = df.dropna(subset=['name_store', 'short_description', 'detailed_description']).copy()
     
-    # Drops games with Chinese Japanese Korean or Cirillic alphabets
-    # Range Unicode:
+    # Drops games with Chinese, Japanese, Korean, or Cyrillic characters
+    # Unicode ranges:
     # \u4e00-\u9fff : CJK Unified Ideographs
     # \u3040-\u30ff : Hiragana & Katakana
     # \uac00-\ud7af : Hangul
-    # \u0400-\u04ff : Cirillic
+    # \u0400-\u04ff : Cyrillic
     cjk_cyrillic_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff]')
     
     def has_foreign_chars(val):
-        # If it's a list, it trasforms it to a string
+        # If it's a list, convert it to a single string before matching
         if isinstance(val, (list, np.ndarray)):
             val = " ".join(str(x) for x in val)
     
@@ -596,13 +598,13 @@ def advanced_quality_filtering(df):
         df['required_age'] = pd.to_numeric(df['required_age'], errors='coerce').fillna(0).astype(int)
         
     # Cleaning NaN playtime
-    playtime_cols = ['average_2weeks', 'median_2weeks', 'median_forever']
+    playtime_cols = ['average_2weeks', 'median_2weeks', 'median_forever', 'average_forever']
     for col in playtime_cols:
         if col in df.columns:
             # NaN -> 0
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
-    # Check for binary columns errors
+    # Sanitize binary columns: coerce to numeric, fill NaN with 0, and clip to [0, 1]
     binary_cols = ['is_controller_supported', 'has_third_party_drm', 'requires_ext_account', 
                    'platform_windows', 'platform_mac', 'platform_linux', 
                    'req_high_end_gpu', 'req_dedicated_gpu', 'req_high_cpu', 'req_mid_cpu']
@@ -679,7 +681,7 @@ def clean_and_export(df, output_filename='steam_dataset_ready.csv'):
         # Lists of links
         'movies', 'screenshots', 'header_image', 'background', 'website',
 
-        # ALready processed data
+        # Already processed data
         'pc_requirements', 'mac_requirements', 'linux_requirements', 'reviews', 'platforms',
         'owners', 'owners_lower_bound', 'release_date', 'initialprice', 'achievements',
 
