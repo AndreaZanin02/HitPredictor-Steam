@@ -1,0 +1,39 @@
+                        ┌──────────────────────────┐
+                        │     RAW STEAM DATA       │
+                        │ (App Metadata & SteamSpy)│
+                        └────────────┬─────────────┘
+                                     │
+                                     ▼
+                        ┌──────────────────────────┐
+                        │     data_cleaning.py     │ ◄── [data_cleaning_utils.py]
+                        └────────────┬─────────────┘
+                                     │
+                                     ▼
+                        ┌──────────────────────────┐
+                        │    clean_dataset.csv     │
+                        └────────────┬─────────────┘
+                                     │
+            ┌────────────────────────┴────────────────────────┐
+            │                                                 │
+            ▼                                                 ▼
+┌──────────────────────────┐                      [Offline R&D Experiment]
+│  data_preprocessing.py   │ ◄───────────────────  test_oversampling.json
+└───────────┬──────────────┘                      (Decision: Class 4 Only)
+            │ (Shared Preprocessing Engine)
+            ├────────────────────────┬────────────────────────┐
+            │                        │                        │
+            ▼                        ▼                        ▼
+┌──────────────────────────┐ ┌──────────────────────────┐ ┌──────────────────────────┐
+│gridSearch_plsda_tfidf.py │ │hyperparameter_tuning.py  │ │    train_pipeline.py     │
+└───────────┬──────────────┘ └───────────┬──────────────┘ └───────────┬──────────────┘
+            │                            │                            │
+            ▼ [Best Text Params]         ▼                            │ [Final ML Artifacts]
+      (Manual Input) ─────────────► [tuning_results_*.json]          │  - pre/post_release.pkl
+                                         │                            │  - SHAP/LIME Plots
+                                         ▼                            │
+                             ┌──────────────────────────┐             │
+                             │    analyze_results.py    │             │
+                             └───────────┬──────────────┘             │
+                                         │                            │
+                                         ▼ [Select Winning Model]     │
+                                   (Manual Input) ────────────────────┘
