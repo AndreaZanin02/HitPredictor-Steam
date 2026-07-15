@@ -114,3 +114,26 @@ To align with EU Responsible AI frameworks emphasized by UniPi, model validation
 [ ] Design the Presentation Deck (.pptx): Construct a highly structured PowerPoint presentation providing a polished technical walkthrough of your pipeline architecture, data leakage controls, and engineering milestones.
 
 [ ] Record Collaborative Video Discussion: Schedule your team video session, utilizing screen sharing to record your joint project presentation and code walkthrough according to University guidelines.
+
+---
+
+# Added on 2026-07-15:
+
+## 🚀 Progressive Phase Checklist
+
+### ⏹️ Phase 1: Code Quality, Style & Serialization
+* [ ] **Audit and Prune Codebase:** Scan application modules to remove unused library imports, dead dependencies, and obsolete tracking prints.
+* [ ] **Standardize Style & Comments:** Bring core scripts into full PEP 8 alignment and enrich function docstrings for academic review.
+* [ ] **Automate Component Pickling:** Update the pipeline to serialize custom fitted transformers (`SteamFeatureExtractor`, `FeatureNameSanitizer`, `CorrelationRemover`) alongside the scalar step into a single production `.pkl` or `.joblib` artifact.
+* [ ] **Establish Version Control for Artifacts:** Integrate automated timestamping/git-hash naming conventions to avoid overwriting optimal weights.
+* [ ] **Analyse ZIP Compression for Dataset Storage:** Refactor `data_cleaning.py` to write `clean_dataset.csv` directly as a `.zip` file to save disk space and optimize I/O. Test downstream read scripts to verify that Pandas transparently parses the compressed archive with zero syntax changes beyond the file extension update.
+
+### ⏹️ Phase 2: Dual-Mode Validation & Pipeline Hardening
+* [ ] **Enforce Split-First Paradigm:** Ensure `data_preprocessing.py` strictly isolates training splits before executing TF-IDF vectorization, supervised dimensionality reduction (PLS-DA), scaling, or resampling to eliminate risk of data leakage.
+* [ ] **Harmonize Pre-Launch Model Bounds:** Verify that the pre-launch pipeline is fully configured to purge all post-release signals (`ccu`, `metacritic_score`, `review_ratio`, etc.) from the training and test matrices dynamically.
+* [ ] **Integrate Regular Expression Name Sanitization:** Build structural string sanitization routines to automatically clean special characters and brackets (such as `[`, `]`, `<`) from feature header names to secure model pipeline training.
+
+### 💻 Phase 3: Infrastructure Lock-In & Production Computation
+* [ ] **Analyze Grid Search & Hyperparameter Tuning Circular Dependency:** Investigate refactoring the optimization scripts to evaluate the feature extraction grid parameters (`PLS-DA` components, `TF-IDF` max features) and model hyperparameters (`max_depth`, `n_estimators`) **simultaneously** inside a single, unified search space. This eliminates the circular dependency where feature-space selection is evaluated on un-optimized basic models, ensuring maximum scientific rigor.
+* [ ] **Implement Unified Pipeline Code Alternative:** Test feasibility of executing `unified_search.py` on our active development environments to compare computational runtime against current sequential tuning results.
+* [ ] **Execute Long-Running 14-Hour Optimization Sweeps:** Launch the complete nested cross-validation runs on the server utilizing PLS-DA to finalize our optimal XGBoost weights.

@@ -1,0 +1,44 @@
+                        ┌──────────────────────────┐
+                        │     RAW STEAM DATA       │
+                        │ (App Metadata & SteamSpy)│
+                        └────────────┬─────────────┘
+                                     │
+                                     ▼
+                        ┌──────────────────────────┐
+                        │     data_cleaning.py     │ ◄── [data_cleaning_utils.py]
+                        └────────────┬─────────────┘
+                                     │
+                                     ▼
+                        ┌──────────────────────────┐
+                        │    clean_dataset.csv     │
+                        └────────────┬─────────────┘
+                                     │
+             ┌───────────────────────┴───────────────────────┐
+             │ (Phase 1: Feature Probe)                      │ (Phase 2: Heavy Tuning)
+             ▼                                               ▼
+┌──────────────────────────┐                    ┌──────────────────────────┐
+│gridSearch_plsda_tfidf.py │                    │hyperparameter_tuning.py  │ ◄── [data_preprocessing.py]
+└────────────┬─────────────┘                    └────────────┬─────────────┘
+             │                                               │
+             ▼ [Finds best TF-IDF/PLS-DA]                    ▼
+       (Manual Input) ────────────────────────────────► [tuning_results_*.json]
+                                                             │
+                                                             ▼
+                                                ┌──────────────────────────┐
+                                                │    analyze_results.py    │
+                                                └────────────┬─────────────┘
+                                                             │
+                                                             ▼ [Selects Winning Model]
+                                                       (Manual Input)
+                                                             │
+                                                             ▼
+                                                ┌──────────────────────────┐
+                                                │     train_pipeline.py    │ ◄── [data_preprocessing.py]
+                                                └────────────┬─────────────┘
+                                                             │
+                                             ┌───────────────┴───────────────┐
+                                             ▼                               ▼
+                                ┌──────────────────────────┐    ┌──────────────────────────┐
+                                │     SAVED ARTIFACTS      │    │     XAI VISUALS          │
+                                │  (pre/post_release.pkl)  │    │   (SHAP & LIME plots)    │
+                                └──────────────────────────┘    └──────────────────────────┘
