@@ -100,29 +100,35 @@ def main():
     print(f"Caching intermediate pipeline layers to disk path: {cache_dir}")
 
     # 4. Constructing the Complete ImbPipeline
+    # Gridsearch sets the order of the searched hyperparameters based on alphabetical order.
+    # Since tfidf and plsda change the number of columns in the dataset, invalidating the cache each time they change,
+    # the numbers inserted in the name ensure that they are the first elements in the list,
+    # i.e., those that change least frequently with each grid search iteration,
+    # maximizing the cache's lifespan and its benefits
     pipeline = ImbPipeline([
-        ('steam_extractor', SteamFeatureExtractor()), 
+        ('0_steam_extractor', SteamFeatureExtractor()), 
         ('base_preprocessor', base_preprocessor),
         ('rus', RandomUnderSampler(sampling_strategy=dynamic_undersample, random_state=SEED)),
-        ('pls_da', SupervisedPLSDATransformer(emb_cols=emb_cols)), 
+        ('1_pls_da', SupervisedPLSDATransformer(emb_cols=emb_cols)), 
         ('corr_remover', CorrelationRemover(threshold=0.95)),
         ('smote_nc', DynamicSMOTENC(sampling_strategy=dynamic_oversample, k_neighbors=3, random_state=SEED)),
         ('tomek', TomekLinks()),
         ('sanitizer', FeatureNameSanitizer()),
-        ('classifier', WeightedXGBClassifier(random_state=SEED, eval_metric='mlogloss', tree_method='hist', device=DEVICE))
+        ('2_classifier', WeightedXGBClassifier(random_state=SEED, eval_metric='mlogloss', tree_method='hist', device=DEVICE))
     ], memory=cache_dir)
 
     # 5. Combined Parameter Search Space
-    # Using specific class prefix tags aligned directly with the pipeline definition steps
+    # Using specific class prefix tags aligned directly with the pipeline definition steps,
+    # so as to change the hyperparameters that invalidate the cache as little as possible
     param_grid = {
         # Feature Extraction Search Space
-        'steam_extractor__max_tfidf_features': [15, 30, 50],
-        'pls_da__n_components': [20, 50, 80],
+        '0_steam_extractor__max_tfidf_features': [15, 30, 50],
+        '1_pls_da__n_components': [20, 50, 80],
         
         # Classifier Hyperparameter Search Space
-        'classifier__max_depth': [3, 6, 9],
-        'classifier__n_estimators': [100, 200, 400],
-        'classifier__learning_rate': [0.05, 0.1, 0.19]
+        '2_classifier__max_depth': [3, 6, 9],
+        '2_classifier__n_estimators': [100, 200, 400],
+        '2_classifier__learning_rate': [0.05, 0.1, 0.19]
     }
 
     print("Initializing Multi-Core Parallelized Unified Grid Search...")
@@ -133,7 +139,7 @@ def main():
         param_grid=param_grid,
         cv=cv_inner,
         scoring=qwk_scorer,
-        n_jobs=-1, # <--- Parallelize folds across all available CPU cores
+        n_jobs=-1,
         verbose=3,
         error_score='raise'
     )
