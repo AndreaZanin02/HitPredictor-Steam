@@ -1,0 +1,50 @@
+       ┌──────────────────────────┐      ┌──────────────────────────┐
+       │     RAW STEAM DATA       │      │ OFFLINE R&D / EXPERIMENTS│
+       │ (App Metadata & SteamSpy)│      │ (test_oversampling.json) │
+       └────────────┬─────────────┘      └────────────┬─────────────┘
+                    │                                 │
+                    │                                 ▼
+                    │                    [Ablation Study: SMOTENC]
+                    │                    • SMOTE Tiers 3 & 4 (Blurred boundaries)
+                    │                    • SMOTE Tier 4 Only (all ok)
+                    │                                 │
+                    ▼                                 │ (Informs Configuration)
+       ┌──────────────────────────┐                   │
+       │     data_cleaning.py     │ ◄─────────────────┘
+       └────────────┬─────────────┘
+                    │
+                    ▼
+       ┌──────────────────────────┐
+       │    clean_dataset.csv     │
+       └────────────┬─────────────┘
+                    │
+        ┌───────────┴───────────────────────────┐
+        ▼                                       ▼
+  (Phase 1: Feature Probe)               (Phase 2: Heavy Tuning)
+┌──────────────────────────┐           ┌──────────────────────────┐
+│gridSearch_plsda_tfidf.py │           │hyperparameter_tuning.py  │ ◄── [data_preprocessing.py]
+└───────────┬──────────────┘           └────────────┬─────────────┘    (Configured for
+            │                                       │                   Tier 4 SMOTE only!)
+            ▼ [Best Text Params]                    ▼
+      (Manual Input) ─────────────────────────► [tuning_results_*.json]
+                                                             │
+                                                             ▼
+                                                ┌──────────────────────────┐
+                                                │    analyze_results.py    │
+                                                └────────────┬─────────────┘
+                                                             │
+                                                             ▼ [Selects Winning Model]
+                                                       (Manual Input)
+                                                             │
+                                                             ▼
+                                                ┌──────────────────────────┐
+                                                │     train_pipeline.py    │ ◄── [data_preprocessing.py]
+                                                └────────────┬─────────────┘
+                                                             │
+                                             ┌───────────────┴───────────────┐
+                                             ▼                               ▼
+                                ┌──────────────────────────┐    ┌──────────────────────────┐
+                                │     SAVED ARTIFACTS      │    │     XAI VISUALS          │
+                                │  (pre/post_release.pkl)  │    │   (SHAP & LIME plots)    │
+                                └──────────────────────────┘    └──────────────────────────┘
+                                
