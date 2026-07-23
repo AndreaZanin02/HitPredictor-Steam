@@ -180,9 +180,6 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# Dataset
-*.csv
-
 # Developer garbage
 /src/andrea_stuff/
 /src/pedro_stuff/
