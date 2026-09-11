@@ -80,4 +80,4 @@ python train_pipeline.py --pre_release
 This project was developed as part of the Master's Degree in Artificial Intelligence and Data Engineering at the University of Pisa.
 ### Students:
 - Andrea Zanin
-- Pedro Carneiro
+- Pedro Carneiro Junior
